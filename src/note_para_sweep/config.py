@@ -67,6 +67,12 @@ class Config:
         return self.config["llm"].get("provider", "openai")
 
     @property
+    def llm_proxy(self) -> Optional[str]:
+        """获取代理设置"""
+        proxy = self.config["llm"].get("proxy", "")
+        return proxy if proxy else None
+
+    @property
     def llm_api_key(self) -> str:
         provider = self.llm_provider
         return self.config["llm"][provider]["api_key"]

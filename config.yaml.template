@@ -6,6 +6,10 @@ llm:
   # 默认提供商: "openai" 或 "openrouters"
   provider: "openai"
 
+  # 网络代理设置 (可选)
+  # 支持 HTTP 和 HTTPS 代理，格式: http://proxy.example.com:8080 或 https://user:pass@proxy.example.com:8080
+  proxy: ""  # 留空表示不使用代理
+
   # OpenAI 配置
   openai:
     api_key: "your-openai-api-key-here"

@@ -6,6 +6,13 @@ import re
 from typing import Dict, Any, Optional
 from .config import Config
 
+try:
+    import httpx
+
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+
 
 class LLMClient:
     """LLM 客户端，支持多个提供商"""
@@ -16,6 +23,7 @@ class LLMClient:
         self.api_key = config.llm_api_key
         self.model = config.llm_model
         self.base_url = config.llm_base_url
+        self.proxy = config.llm_proxy
 
         # 检查是否为mock模式（API Key为空或包含mock）
         self.mock_mode = not self.api_key or "mock" in self.api_key.lower()
@@ -26,12 +34,31 @@ class LLMClient:
 
     def _init_client(self):
         """初始化 LLM 客户端"""
-        if self.provider == "openai":
-            self.client = openai.OpenAI(
-                api_key=self.api_key, base_url=self.base_url if self.base_url else None
+        # 准备客户端参数
+        client_kwargs = {
+            "api_key": self.api_key,
+        }
+
+        # 如果设置了base_url，添加到参数中
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+
+        # 如果设置了代理，创建带有代理的HTTP客户端
+        if self.proxy and HTTPX_AVAILABLE:
+            # 修复：proxies应该是字典格式，支持http和https
+            proxies = {"http://": self.proxy, "https://": self.proxy}
+            client_kwargs["http_client"] = httpx.Client(
+                proxies=proxies, timeout=30.0  # 30秒超时
             )
+        elif self.proxy and not HTTPX_AVAILABLE:
+            print(f"⚠️  警告: 配置了代理但未安装 httpx，无法使用代理功能")
+            print("请运行: pip install httpx")
+
+        # 初始化客户端
+        if self.provider == "openai":
+            self.client = openai.OpenAI(**client_kwargs)
         elif self.provider == "openrouter":
-            self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+            self.client = openai.OpenAI(**client_kwargs)
         else:
             raise ValueError(f"不支持的LLM提供商: {self.provider}")
 
