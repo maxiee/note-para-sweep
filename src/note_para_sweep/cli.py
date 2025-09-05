@@ -18,17 +18,147 @@ from .file_operations import FileOperator
 console = Console()
 
 
+class LogFileManager:
+    """日志文件管理器"""
+
+    def __init__(self, log_file_path: Optional[str] = None):
+        self.log_file_path = log_file_path
+        self.session_started = False
+
+    def start_session(self, command: str, config_info: dict):
+        """开始新的日志会话"""
+        if not self.log_file_path:
+            return
+
+        from datetime import datetime
+        from pathlib import Path
+        import sys
+
+        try:
+            # 确保日志目录存在
+            log_path = Path(self.log_file_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(self.log_file_path, "a", encoding="utf-8") as f:
+                if not self.session_started:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"Note PARA Sweep - 详细日志\n")
+                    f.write(
+                        f"会话开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    )
+                    f.write(f"执行命令: {command}\n")
+                    f.write(f"Python版本: {sys.version}\n")
+                    f.write(f"配置信息: {config_info}\n")
+                    f.write(f"{'='*80}\n\n")
+                    self.session_started = True
+        except Exception as e:
+            console.print(
+                f"[red]警告: 无法写入日志文件 {self.log_file_path}: {e}[/red]"
+            )
+            self.log_file_path = None
+
+    def write_log(self, message: str):
+        """写入日志消息"""
+        if not self.log_file_path:
+            return
+
+        try:
+            with open(self.log_file_path, "a", encoding="utf-8") as f:
+                f.write(message + "\n")
+        except Exception as e:
+            # 静默失败，避免影响主程序
+            pass
+
+
+# 全局日志文件管理器
+_log_manager = LogFileManager()
+
+
+def verbose_log(message: str, verbose: bool = False, level: str = "info"):
+    """条件性日志输出
+
+    Args:
+        message: 日志消息
+        verbose: 是否启用详细模式
+        level: 日志级别 (info, debug, warning, error)
+    """
+    if not verbose:
+        return
+
+    level_colors = {
+        "debug": "dim cyan",
+        "info": "cyan",
+        "warning": "yellow",
+        "error": "red",
+    }
+
+    color = level_colors.get(level, "white")
+    prefix = f"[{level.upper()}]" if level != "info" else "[VERBOSE]"
+
+    from datetime import datetime
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
+
+    # 控制台输出
+    console.print(f"[dim]{timestamp}[/dim] [{color}]{prefix}[/{color}] {message}")
+
+    # 日志文件输出（纯文本格式）
+    _log_manager.write_log(f"{timestamp} {prefix} {message}")
+
+
+def verbose_log_json(label: str, data: dict, verbose: bool = False):
+    """格式化输出JSON数据
+
+    Args:
+        label: 数据标签
+        data: 要输出的字典数据
+        verbose: 是否启用详细模式
+    """
+    if not verbose:
+        return
+
+    from datetime import datetime
+    import json
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
+
+    # 控制台输出
+    console.print(f"\n[dim]{timestamp}[/dim] [dim cyan]━━━ {label} ━━━[/dim cyan]")
+    console.print_json(data=data)
+    console.print(
+        "[dim cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim cyan]"
+    )
+
+    # 日志文件输出
+    _log_manager.write_log(f"\n{timestamp} ━━━ {label} ━━━")
+    _log_manager.write_log(json.dumps(data, ensure_ascii=False, indent=2))
+    _log_manager.write_log("━" * 50)
+
+
 @click.group()
 @click.option("--config", "-c", default="config.yaml", help="配置文件路径")
 @click.option("--dry-run", is_flag=True, help="试运行模式，不执行实际操作")
+@click.option("--verbose", "-v", is_flag=True, help="详细输出模式，显示调试信息")
+@click.option(
+    "--log-file", "-l", help="保存详细日志到指定文件（需要同时启用--verbose）"
+)
 @click.pass_context
-def cli(ctx, config, dry_run):
+def cli(ctx, config, dry_run, verbose, log_file):
     """Note PARA Sweep - AI 驱动的 Obsidian 笔记 PARA 分类器"""
     ctx.ensure_object(dict)
 
     try:
         ctx.obj["config"] = Config(config)
         ctx.obj["dry_run"] = dry_run or ctx.obj["config"].dry_run_by_default
+        ctx.obj["verbose"] = verbose
+        ctx.obj["log_file"] = (
+            log_file if verbose else None
+        )  # 只有在verbose模式下才启用日志文件
+
+        # 初始化日志文件管理器
+        if ctx.obj["log_file"]:
+            global _log_manager
+            _log_manager = LogFileManager(ctx.obj["log_file"])
 
         # 显示欢迎信息
         if ctx.invoked_subcommand:
@@ -45,6 +175,9 @@ def cli(ctx, config, dry_run):
                 console.print(
                     "[yellow]⚠️  当前处于试运行模式，不会执行实际的文件操作[/yellow]"
                 )
+
+            if ctx.obj["log_file"]:
+                console.print(f"[green]📝 日志将保存到: {ctx.obj['log_file']}[/green]")
 
     except FileNotFoundError as e:
         console.print(f"[red]配置文件错误: {e}[/red]")
@@ -65,11 +198,49 @@ def cli(ctx, config, dry_run):
 def scan(ctx):
     """扫描 PARA 目录结构"""
     config = ctx.obj["config"]
+    verbose = ctx.obj["verbose"]
+    log_file = ctx.obj["log_file"]
+
+    # 初始化日志会话
+    if log_file:
+        _log_manager.start_session(
+            "scan",
+            {
+                "vault_path": str(config.vault_path),
+                "para_paths": config.para_paths,
+                "verbose": verbose,
+                "log_file": log_file,
+            },
+        )
 
     console.print("[blue]正在扫描 PARA 目录结构...[/blue]")
+    verbose_log(f"扫描目标路径: {config.vault_path}", verbose)
+    verbose_log(f"PARA 路径配置: {config.para_paths}", verbose)
 
     scanner = DirectoryScanner(config.vault_path, config.para_paths)
     scan_result = scanner.scan()
+
+    verbose_log_json(
+        "详细扫描结果",
+        {
+            "vault_path": str(config.vault_path),
+            "scan_details": {
+                path: {
+                    "note_count": info.note_count,
+                    "subdirs": [
+                        {
+                            "name": sub.name,
+                            "note_count": sub.note_count,
+                            "path": str(sub.path),
+                        }
+                        for sub in info.subdirs
+                    ],
+                }
+                for path, info in scan_result.items()
+            },
+        },
+        verbose,
+    )
 
     # 生成并显示结构摘要
     summary = scanner.generate_structure_summary(scan_result)
@@ -78,6 +249,10 @@ def scan(ctx):
     # 统计信息
     total_notes = sum(dir_info.note_count for dir_info in scan_result.values())
     console.print(f"\n[green]✅ 扫描完成！共发现 {total_notes} 篇笔记[/green]")
+    verbose_log(
+        f"统计详情: {[(path, info.note_count) for path, info in scan_result.items()]}",
+        verbose,
+    )
 
 
 @cli.command()
@@ -87,6 +262,21 @@ def classify(ctx, note_path):
     """分类单个笔记文件"""
     config = ctx.obj["config"]
     dry_run = ctx.obj["dry_run"]
+    verbose = ctx.obj["verbose"]
+    log_file = ctx.obj["log_file"]
+
+    # 初始化日志会话
+    if log_file:
+        _log_manager.start_session(
+            f"classify {note_path}",
+            {
+                "note_path": str(note_path),
+                "vault_path": str(config.vault_path),
+                "dry_run": dry_run,
+                "verbose": verbose,
+                "log_file": log_file,
+            },
+        )
 
     note_path = Path(note_path)
 
@@ -103,7 +293,9 @@ def classify(ctx, note_path):
         para_structure = scanner.generate_structure_summary(scan_result)
 
         # 初始化 LLM 客户端
-        llm_client = LLMClient(config)
+        llm_client = LLMClient(
+            config, verbose=verbose, log_file_manager=_log_manager if log_file else None
+        )
 
         console.print("[yellow]正在使用 AI 分析笔记...[/yellow]")
         console.print(
@@ -211,6 +403,21 @@ def optimize(ctx):
     """优化整体 PARA 结构"""
     config = ctx.obj["config"]
     dry_run = ctx.obj["dry_run"]
+    verbose = ctx.obj["verbose"]
+    log_file = ctx.obj["log_file"]
+
+    # 初始化日志会话
+    if log_file:
+        _log_manager.start_session(
+            "optimize",
+            {
+                "vault_path": str(config.vault_path),
+                "para_paths": config.para_paths,
+                "dry_run": dry_run,
+                "verbose": verbose,
+                "log_file": log_file,
+            },
+        )
 
     console.print("[blue]正在分析整体 PARA 结构...[/blue]")
 
@@ -220,18 +427,48 @@ def optimize(ctx):
 
     try:
         # 扫描目录结构
+        verbose_log("开始扫描目录结构", verbose)
         scanner = DirectoryScanner(config.vault_path, config.para_paths)
         scan_result = scanner.scan()
+
+        verbose_log_json(
+            "目录扫描结果",
+            {
+                "para_paths": config.para_paths,
+                "vault_path": str(config.vault_path),
+                "scan_summary": {
+                    path: {
+                        "note_count": info.note_count,
+                        "subdirs": [
+                            {"name": sub.name, "note_count": sub.note_count}
+                            for sub in info.subdirs
+                        ],
+                    }
+                    for path, info in scan_result.items()
+                },
+            },
+            verbose,
+        )
+
         para_structure = scanner.generate_structure_summary(scan_result)
+        verbose_log(f"生成的PARA结构摘要:\n{para_structure}", verbose)
 
         # 生成笔记概览
         notes_overview = _generate_notes_overview(scan_result)
+        verbose_log(f"生成的笔记概览:\n{notes_overview}", verbose)
 
         # 初始化 LLM 客户端和文件操作器
-        llm_client = LLMClient(config)
+        verbose_log(
+            f"初始化LLM客户端 - 提供商: {config.llm_provider}, 模型: {config.llm_model}",
+            verbose,
+        )
+        llm_client = LLMClient(
+            config, verbose=verbose, log_file_manager=_log_manager if log_file else None
+        )
         file_operator = FileOperator(dry_run=dry_run)
 
         # 加载建议历史
+        verbose_log("加载建议历史", verbose)
         file_operator.load_suggestion_history()
 
         console.print("[yellow]正在使用 AI 分析结构优化机会...[/yellow]")
@@ -239,14 +476,31 @@ def optimize(ctx):
             f"[dim]使用提供商: {config.llm_provider} | 模型: {config.llm_model}[/dim]"
         )
 
+        # 记录LLM请求
+        verbose_log("准备发送LLM请求进行结构分析", verbose)
+        verbose_log_json(
+            "LLM请求参数",
+            {
+                "para_structure_length": len(para_structure),
+                "notes_overview_length": len(notes_overview),
+                "provider": config.llm_provider,
+                "model": config.llm_model,
+            },
+            verbose,
+        )
+
         # 调用结构优化分析
         result = llm_client.optimize_structure(para_structure, notes_overview)
 
+        verbose_log_json("LLM完整响应", result, verbose)
+
         if not result["success"]:
             console.print(f"[red]结构分析失败: {result['error']}[/red]")
+            verbose_log(f"失败详情: {result}", verbose, "error")
             return
 
         optimization = result["optimization"]
+        verbose_log_json("解析后的优化建议", optimization, verbose)
 
         # 显示整体评估
         _display_structure_assessment(optimization)
@@ -260,9 +514,12 @@ def optimize(ctx):
             return
 
         console.print(f"\n[bold]发现 {len(suggestions)} 条优化建议：[/bold]")
+        verbose_log(f"建议总数: {len(suggestions)}", verbose)
 
         # 逐条处理建议
         for i, suggestion in enumerate(suggestions, 1):
+            verbose_log_json(f"处理建议 {i}", suggestion, verbose)
+
             console.print(f"\n[bold cyan]建议 {i}/{len(suggestions)}:[/bold cyan]")
             _display_optimization_suggestion(suggestion)
 
@@ -281,6 +538,8 @@ def optimize(ctx):
                 show_choices=True,
             )
 
+            verbose_log(f"用户选择: {choice}", verbose)
+
             if choice == "q":
                 console.print("退出优化模式")
                 break
@@ -288,6 +547,7 @@ def optimize(ctx):
                 console.print("跳过剩余所有建议")
                 break
             elif choice == "d":
+                verbose_log("进入交互式讨论模式", verbose)
                 # 进入与AI的交互式讨论
                 final_suggestion = _interactive_discussion(llm_client, suggestion)
                 if final_suggestion:
@@ -297,6 +557,10 @@ def optimize(ctx):
                         if hasattr(llm_client, "conversation_history")
                         else []
                     )
+                    verbose_log_json(
+                        "对话历史", {"conversation": conversation_history}, verbose
+                    )
+
                     file_operator.record_suggestion_history(
                         original_suggestion=suggestion,
                         final_suggestion=final_suggestion,
@@ -347,6 +611,11 @@ def optimize(ctx):
 
     except Exception as e:
         console.print(f"[red]结构优化失败: {e}[/red]")
+        verbose_log(f"异常详情: {str(e)}", verbose, "error")
+        if verbose:
+            import traceback
+
+            verbose_log(f"完整堆栈跟踪:\n{traceback.format_exc()}", verbose, "error")
 
 
 def _generate_notes_overview(scan_result: dict) -> str:

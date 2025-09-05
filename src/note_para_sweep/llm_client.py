@@ -3,6 +3,7 @@
 import openai
 import json
 import re
+import logging
 from typing import Dict, Any, Optional
 from .config import Config
 
@@ -13,17 +14,22 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
 
+# 设置日志记录器
+logger = logging.getLogger(__name__)
+
 
 class LLMClient:
     """LLM 客户端，支持多个提供商"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, verbose: bool = False, log_file_manager=None):
         self.config = config
         self.provider = config.llm_provider
         self.api_key = config.llm_api_key
         self.model = config.llm_model
         self.base_url = config.llm_base_url
         self.proxy = config.llm_proxy
+        self.verbose = verbose
+        self.log_file_manager = log_file_manager
 
         # 检查是否为mock模式（API Key为空或包含mock）
         self.mock_mode = not self.api_key or "mock" in self.api_key.lower()
@@ -34,6 +40,32 @@ class LLMClient:
         # 初始化客户端
         if not self.mock_mode:
             self._init_client()
+
+    def _log_verbose(self, message: str, level: str = "info"):
+        """详细日志记录"""
+        if not self.verbose:
+            return
+
+        from datetime import datetime
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        level_colors = {
+            "debug": "dim cyan",
+            "info": "cyan",
+            "warning": "yellow",
+            "error": "red",
+        }
+
+        color = level_colors.get(level, "white")
+        prefix = f"[LLM-{level.upper()}]" if level != "info" else "[LLM]"
+
+        # 控制台输出
+        print(f"{timestamp} {prefix} {message}")
+
+        # 日志文件输出
+        if self.log_file_manager:
+            self.log_file_manager.write_log(f"{timestamp} {prefix} {message}")
 
     def _init_client(self):
         """初始化 LLM 客户端"""
@@ -75,7 +107,24 @@ class LLMClient:
         Returns:
             AI 的回复内容
         """
+        self._log_verbose(f"开始 chat_completion 请求，消息数量: {len(messages)}")
+        self._log_verbose(f"使用模型: {self.model}，提供商: {self.provider}")
+
+        if self.verbose:
+            self._log_verbose("请求消息详情:")
+            for i, msg in enumerate(messages):
+                content_preview = (
+                    msg.get("content", "")[:200] + "..."
+                    if len(msg.get("content", "")) > 200
+                    else msg.get("content", "")
+                )
+                self._log_verbose(
+                    f"  消息 {i+1}: role={msg.get('role')}, content_length={len(msg.get('content', ''))}"
+                )
+                self._log_verbose(f"  内容预览: {content_preview}")
+
         if self.mock_mode:
+            self._log_verbose("使用 Mock 模式，返回模拟响应")
             return self._mock_response(messages)
 
         # 输入验证
@@ -92,6 +141,7 @@ class LLMClient:
 
         for attempt in range(max_retries):
             try:
+                self._log_verbose(f"发送 API 请求 (尝试 {attempt + 1}/{max_retries})")
                 response = self.client.chat.completions.create(
                     model=self.model, messages=messages, **kwargs
                 )
@@ -103,17 +153,28 @@ class LLMClient:
                 if not content:
                     raise Exception("API 返回了空内容")
 
+                self._log_verbose(f"API 响应成功，内容长度: {len(content)}")
+                if self.verbose:
+                    content_preview = (
+                        content[:300] + "..." if len(content) > 300 else content
+                    )
+                    self._log_verbose(f"响应内容预览: {content_preview}")
+
                 return content
 
             except openai.RateLimitError as e:
                 last_error = f"请求频率限制: {str(e)}"
+                self._log_verbose(f"遇到频率限制错误: {last_error}", "warning")
                 if attempt < max_retries - 1:
                     import time
 
-                    time.sleep(2**attempt)  # 指数退避
+                    wait_time = 2**attempt
+                    self._log_verbose(f"等待 {wait_time} 秒后重试", "warning")
+                    time.sleep(wait_time)  # 指数退避
                     continue
             except openai.APIError as e:
                 last_error = f"API 错误: {str(e)}"
+                self._log_verbose(f"遇到 API 错误: {last_error}", "error")
                 if attempt < max_retries - 1:
                     import time
 
@@ -121,15 +182,16 @@ class LLMClient:
                     continue
             except Exception as e:
                 last_error = f"未知错误: {str(e)}"
+                self._log_verbose(f"遇到未知错误: {last_error}", "error")
                 if attempt < max_retries - 1:
                     import time
 
                     time.sleep(1)
                     continue
 
-        raise Exception(
-            f"LLM API 调用失败 ({self.provider}) - 已重试 {max_retries} 次: {last_error}"
-        )
+        error_msg = f"LLM API 调用失败 ({self.provider}) - 已重试 {max_retries} 次: {last_error}"
+        self._log_verbose(error_msg, "error")
+        raise Exception(error_msg)
 
     def _mock_response(self, messages: list) -> str:
         """模拟AI响应，用于演示"""
