@@ -313,6 +313,69 @@ def classify(ctx, note_path):
 
         classification = result["classification"]
 
+        # 检查是否是question类型的回复
+        if classification.get("action_type") == "question":
+            question = classification.get("question", "")
+            question_context = classification.get("question_context", "")
+            
+            console.print("\n[bold blue]🤖 AI 需要更多信息来准确分类这个笔记：[/bold blue]")
+            console.print(f"[yellow]{question}[/yellow]")
+            
+            if question_context:
+                console.print(f"[dim]背景：{question_context}[/dim]")
+            
+            console.print(f"\n[dim]分类原因：{classification.get('reasoning', '无原因说明')}[/dim]")
+            console.print("\n[dim]请提供相关信息，或输入 'cancel' 取消分类[/dim]")
+            
+            user_answer = click.prompt("你的回答", default="", show_default=False).strip()
+            
+            if not user_answer or user_answer.lower() in ["cancel", "取消"]:
+                console.print("[yellow]分类操作已取消[/yellow]")
+                return
+            
+            # 基于用户回答重新分类
+            console.print("[dim]AI正在基于你的回答重新分类...[/dim]")
+            
+            try:
+                follow_up_prompt = f"""
+基于用户的回答，请重新分类这个笔记。
+
+原始问题：{question}
+用户回答：{user_answer}
+笔记内容：{note_content[:1000]}
+
+请返回具体的分类结果：
+{{
+    "category": "projects|areas|resources|archives",
+    "subcategory": "具体的子分类名称",
+    "target_path": "具体的完整目标文件路径（包含.md扩展名）",
+    "confidence": 0.85,
+    "reasoning": "基于用户回答的分类理由",
+    "action_type": "move|create_and_move",
+    "create_directories": ["需要创建的目录路径"]
+}}
+"""
+                
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "你是PARA方法专家，根据用户提供的信息重新分类笔记。必须返回有效的JSON格式。"
+                    },
+                    {
+                        "role": "user",
+                        "content": follow_up_prompt
+                    }
+                ]
+                
+                response = llm_client.chat_completion(messages, temperature=0.3)
+                classification = llm_client._parse_json_response(response)
+                
+                console.print("\n[bold green]✅ 基于你的回答，AI 重新分类了这个笔记：[/bold green]")
+                
+            except Exception as e:
+                console.print(f"[red]重新分类失败: {str(e)}[/red]")
+                return
+
         # 显示分类结果
         _display_classification_result(classification, result)
 
@@ -521,6 +584,76 @@ def optimize(ctx):
             verbose_log_json(f"处理建议 {i}", suggestion, verbose)
 
             console.print(f"\n[bold cyan]建议 {i}/{len(suggestions)}:[/bold cyan]")
+            
+            # 特殊处理question类型的建议
+            if suggestion.get("type") == "question":
+                _display_optimization_suggestion(suggestion)
+                
+                if dry_run:
+                    console.print("[yellow]试运行模式：显示问题但不处理[/yellow]")
+                    continue
+                
+                # 处理AI的问题并获取新建议
+                new_suggestion = _handle_question_suggestion(suggestion, llm_client)
+                if new_suggestion:
+                    # 验证新建议的路径
+                    is_valid, error_message = _validate_suggestion_paths(new_suggestion, config.vault_path)
+                    if is_valid:
+                        _display_optimization_suggestion(new_suggestion)
+                        if Confirm.ask("执行这个基于你回答生成的建议吗？"):
+                            execution_result = _execute_suggestion(
+                                new_suggestion, config, file_operator, verbose
+                            )
+                            _display_execution_result(execution_result, new_suggestion)
+                    else:
+                        console.print(f"[red]生成的建议路径验证失败: {error_message}[/red]")
+                else:
+                    console.print("跳过此建议")
+                continue
+            
+            # 验证建议中的路径
+            is_valid, error_message = _validate_suggestion_paths(suggestion, config.vault_path)
+            if not is_valid:
+                console.print(f"[red]⚠️  建议路径验证失败: {error_message}[/red]")
+                console.print("[yellow]建议内容可能包含描述性文本而非具体路径，请修改后重试[/yellow]")
+                
+                # 显示原始建议供参考
+                _display_optimization_suggestion(suggestion)
+                
+                if not dry_run:
+                    console.print("[dim]选项: n=跳过, d=与AI讨论修正, s=全部跳过, q=退出[/dim]")
+                    choice = click.prompt(
+                        "选择操作",
+                        type=click.Choice(["n", "d", "s", "q"]),
+                        default="n",
+                        show_choices=True,
+                    )
+                    
+                    if choice == "q":
+                        console.print("退出优化模式")
+                        break
+                    elif choice == "s":
+                        console.print("跳过剩余所有建议")
+                        break
+                    elif choice == "d":
+                        # 进入讨论模式修正路径
+                        console.print("[yellow]请与AI讨论以修正路径信息[/yellow]")
+                        final_suggestion = _interactive_discussion(llm_client, suggestion)
+                        if final_suggestion:
+                            # 重新验证修正后的建议
+                            is_valid_after, error_after = _validate_suggestion_paths(final_suggestion, config.vault_path)
+                            if is_valid_after:
+                                console.print("\n[bold cyan]修正后的建议通过验证：[/bold cyan]")
+                                _display_optimization_suggestion(final_suggestion)
+                                if Confirm.ask("执行这个修正后的建议吗？"):
+                                    execution_result = _execute_suggestion(
+                                        final_suggestion, config, file_operator, verbose
+                                    )
+                                    _display_execution_result(execution_result, final_suggestion)
+                            else:
+                                console.print(f"[red]修正后的建议仍然验证失败: {error_after}[/red]")
+                continue
+            
             _display_optimization_suggestion(suggestion)
 
             if dry_run:
@@ -579,7 +712,12 @@ def optimize(ctx):
                             conversation_history=conversation_history,
                             user_decision="accepted",
                         )
-                        console.print("[yellow]优化操作执行功能正在开发中...[/yellow]")
+                        # 执行最终建议
+                        console.print("[yellow]正在执行建议...[/yellow]")
+                        execution_result = _execute_suggestion(
+                            final_suggestion, config, file_operator, verbose
+                        )
+                        _display_execution_result(execution_result, final_suggestion)
                     else:
                         file_operator.record_suggestion_history(
                             original_suggestion=suggestion,
@@ -600,8 +738,12 @@ def optimize(ctx):
                 file_operator.record_suggestion_history(
                     original_suggestion=suggestion, user_decision="accepted_directly"
                 )
-                # 这里应该执行具体的优化操作
-                console.print("[yellow]优化操作执行功能正在开发中...[/yellow]")
+                # 执行建议
+                console.print("[yellow]正在执行建议...[/yellow]")
+                execution_result = _execute_suggestion(
+                    suggestion, config, file_operator, verbose
+                )
+                _display_execution_result(execution_result, suggestion)
             else:
                 # 记录跳过的建议
                 file_operator.record_suggestion_history(
@@ -654,6 +796,59 @@ def _display_structure_assessment(optimization: dict):
     console.print(Panel(assessment_text, title="PARA 结构分析", expand=False))
 
 
+def _validate_suggestion_paths(suggestion: dict, vault_path: Path) -> tuple[bool, str]:
+    """验证建议中的路径是否有效
+    
+    Args:
+        suggestion: 要验证的建议
+        vault_path: vault根目录路径
+        
+    Returns:
+        (is_valid, error_message) - 验证结果和错误信息
+    """
+    suggestion_type = suggestion.get("type", "")
+    current_path = suggestion.get("current_path", "")
+    suggested_path = suggestion.get("suggested_path", "")
+    
+    # 对于question类型的建议，不需要验证路径
+    if suggestion_type == "question":
+        return True, ""
+    
+    # 检查是否包含描述性文本而非具体路径
+    descriptive_patterns = [
+        "对应", "合适的", "相关的", "适当的", "正确的",
+        "P/A/R", "子目录", "目录", "位置", "地方"
+    ]
+    
+    for pattern in descriptive_patterns:
+        if pattern in current_path or pattern in suggested_path:
+            return False, f"路径包含描述性文本而非具体路径: {pattern}"
+    
+    # 检查是否为空或过于泛化
+    if not current_path.strip() and suggestion.get("type") in ["move", "rename"]:
+        return False, "移动/重命名操作必须指定具体的当前路径"
+    
+    if not suggested_path.strip():
+        return False, "必须指定具体的目标路径"
+    
+    # 检查路径格式是否合理
+    if suggested_path in ["无", "未知", "待定", "TBD"]:
+        return False, f"路径格式无效: {suggested_path}"
+    
+    # 检查是否包含PARA标准目录结构
+    para_prefixes = ["0. Inbox", "1. Projects", "2. Areas", "3. Resources", "4. Archives"]
+    if suggestion.get("type") in ["move", "create"] and not any(suggested_path.startswith(prefix) for prefix in para_prefixes):
+        return False, f"目标路径应该基于PARA结构 (0. Inbox, 1. Projects, 2. Areas, 3. Resources, 4. Archives): {suggested_path}"
+    
+    # 对于移动操作，检查当前路径是否存在（如果不为空）
+    if current_path and suggestion.get("type") in ["move", "rename"]:
+        current_full_path = vault_path / current_path
+        if not current_full_path.exists():
+            return False, f"当前路径不存在: {current_path}"
+    
+    return True, ""
+
+
 def _display_optimization_suggestion(suggestion: dict):
     """显示单个优化建议"""
     suggestion_type = suggestion.get("type", "unknown")
@@ -667,6 +862,27 @@ def _display_optimization_suggestion(suggestion: dict):
     priority_colors = {"high": "red", "medium": "yellow", "low": "green"}
     priority_color = priority_colors.get(priority, "white")
 
+    # 特殊处理question类型
+    if suggestion_type == "question":
+        question = suggestion.get("question", "无问题")
+        question_context = suggestion.get("question_context", "")
+        
+        table = Table(title="❓ AI 需要更多信息")
+        table.add_column("属性", style="cyan")
+        table.add_column("值", style="white")
+
+        table.add_row("优先级", f"[{priority_color}]{priority.upper()}[/{priority_color}]")
+        table.add_row("问题", question)
+        if question_context:
+            table.add_row("背景", question_context)
+        if current_path:
+            table.add_row("相关路径", current_path)
+
+        console.print(table)
+        console.print(Panel(reasoning, title="AI 为什么需要这个信息", expand=False))
+        return
+
+    # 普通建议的显示
     table = Table(title=f"{suggestion_type.upper()} 建议")
     table.add_column("属性", style="cyan")
     table.add_column("值", style="white")
@@ -680,6 +896,341 @@ def _display_optimization_suggestion(suggestion: dict):
 
     console.print(table)
     console.print(Panel(reasoning, title="建议理由", expand=False))
+
+
+def _handle_question_suggestion(suggestion: dict, llm_client: LLMClient) -> Optional[dict]:
+    """处理question类型的建议，与用户交互获取信息后生成新建议
+    
+    Args:
+        suggestion: question类型的建议
+        llm_client: LLM客户端
+        
+    Returns:
+        用户提供信息后生成的新建议，如果用户取消则返回None
+    """
+    question = suggestion.get("question", "")
+    question_context = suggestion.get("question_context", "")
+    
+    console.print("\n[bold blue]🤖 AI 需要更多信息来提供准确的建议：[/bold blue]")
+    console.print(f"[yellow]{question}[/yellow]")
+    
+    if question_context:
+        console.print(f"[dim]背景：{question_context}[/dim]")
+    
+    console.print("\n[dim]请提供相关信息，或输入 'skip' 跳过此建议[/dim]")
+    
+    # 获取用户输入
+    user_answer = click.prompt("你的回答", default="", show_default=False).strip()
+    
+    if not user_answer or user_answer.lower() in ["skip", "跳过"]:
+        console.print("[yellow]已跳过此建议[/yellow]")
+        return None
+    
+    # 使用LLM基于用户提供的信息生成新建议
+    console.print("[dim]AI正在基于你的回答生成具体建议...[/dim]")
+    
+    try:
+        # 构建包含用户回答的prompt
+        follow_up_prompt = f"""
+基于用户的回答，请提供具体的操作建议。
+
+原始问题：{question}
+用户回答：{user_answer}
+原始建议上下文：{suggestion.get('reasoning', '')}
+
+请返回具体的操作建议，必须包含明确的路径。格式如下：
+{{
+    "type": "rename|move|merge|create",
+    "priority": "high|medium|low",
+    "description": "具体的操作描述",
+    "current_path": "当前路径（如果适用）",
+    "suggested_path": "具体的目标路径",
+    "reasoning": "基于用户回答的具体理由"
+}}
+"""
+        
+        messages = [
+            {
+                "role": "system",
+                "content": "你是PARA方法专家，根据用户提供的信息生成具体的操作建议。必须返回有效的JSON格式。"
+            },
+            {
+                "role": "user",
+                "content": follow_up_prompt
+            }
+        ]
+        
+        response = llm_client.chat_completion(messages, temperature=0.3)
+        new_suggestion = llm_client._parse_json_response(response)
+        
+        console.print("\n[bold green]✅ 基于你的回答，AI 生成了以下具体建议：[/bold green]")
+        return new_suggestion
+        
+    except Exception as e:
+        console.print(f"[red]生成新建议失败: {str(e)}[/red]")
+        return None
+
+
+def _execute_suggestion(
+    suggestion: dict, config: Config, file_operator: FileOperator, verbose: bool = False
+) -> dict:
+    """执行优化建议
+
+    Args:
+        suggestion: 要执行的建议
+        config: 配置对象
+        file_operator: 文件操作器
+        verbose: 是否详细输出
+
+    Returns:
+        执行结果字典
+    """
+    suggestion_type = suggestion.get("type", "").lower()
+    current_path = suggestion.get("current_path", "")
+    suggested_path = suggestion.get("suggested_path", "")
+
+    result = {
+        "success": False,
+        "operation": suggestion_type,
+        "details": [],
+        "error": None,
+    }
+
+    try:
+        vault_path = config.vault_path
+
+        # 最后一次路径验证
+        is_valid, error_message = _validate_suggestion_paths(suggestion, vault_path)
+        if not is_valid:
+            result["error"] = f"执行前路径验证失败: {error_message}"
+            return result
+
+        # 构建完整路径
+        if current_path and not current_path.startswith("/"):
+            current_full_path = vault_path / current_path
+        else:
+            current_full_path = vault_path / current_path.lstrip("/") if current_path else None
+
+        if suggested_path and not suggested_path.startswith("/"):
+            suggested_full_path = vault_path / suggested_path
+        else:
+            suggested_full_path = vault_path / suggested_path.lstrip("/")
+
+        verbose_log(f"执行建议类型: {suggestion_type}", verbose)
+        if current_full_path:
+            verbose_log(f"当前路径: {current_full_path}", verbose)
+        verbose_log(f"目标路径: {suggested_full_path}", verbose)
+
+        # 执行前的安全检查和用户确认
+        if suggestion_type in ["move", "rename"] and current_full_path:
+            if not current_full_path.exists():
+                result["error"] = f"源路径不存在: {current_full_path}"
+                return result
+                
+            # 检查目标路径是否会覆盖现有文件/目录
+            if suggested_full_path.exists():
+                console.print(f"[yellow]⚠️  目标路径已存在: {suggested_full_path}[/yellow]")
+                if not Confirm.ask("是否要覆盖现有的文件/目录？"):
+                    result["error"] = "用户取消操作：目标路径已存在"
+                    return result
+
+        # 根据建议类型执行相应操作
+        if suggestion_type == "move":
+            if not current_full_path:
+                result["error"] = "移动操作需要指定当前路径"
+                return result
+            return _execute_move_suggestion(
+                current_full_path, suggested_full_path, file_operator, verbose
+            )
+        elif suggestion_type == "rename":
+            if not current_full_path:
+                result["error"] = "重命名操作需要指定当前路径"
+                return result
+            return _execute_rename_suggestion(
+                current_full_path, suggested_full_path, file_operator, verbose
+            )
+        elif suggestion_type == "create":
+            return _execute_create_suggestion(
+                suggested_full_path, file_operator, verbose
+            )
+        elif suggestion_type == "merge":
+            if not current_full_path:
+                result["error"] = "合并操作需要指定当前路径"
+                return result
+            return _execute_merge_suggestion(
+                current_full_path, suggested_full_path, file_operator, verbose
+            )
+        else:
+            result["error"] = f"不支持的建议类型: {suggestion_type}"
+            return result
+
+    except Exception as e:
+        result["error"] = f"执行建议时发生错误: {str(e)}"
+        verbose_log(f"执行建议失败: {str(e)}", verbose, "error")
+        return result
+
+
+def _execute_move_suggestion(
+    current_path: Path, target_path: Path, file_operator: FileOperator, verbose: bool
+) -> dict:
+    """执行移动建议"""
+    result = {"success": False, "operation": "move", "details": [], "error": None}
+
+    try:
+        # 检查源路径是否存在
+        if not current_path.exists():
+            result["error"] = f"源路径不存在: {current_path}"
+            return result
+
+        # 确保目标目录存在
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if current_path.is_file():
+            # 移动文件
+            move_result = file_operator.move_file(current_path, target_path)
+            result["details"].append(move_result)
+            result["success"] = move_result["success"]
+            if not move_result["success"]:
+                result["error"] = move_result["error"]
+        elif current_path.is_dir():
+            # 移动目录（重命名）
+            import shutil
+
+            if not file_operator.dry_run:
+                shutil.move(str(current_path), str(target_path))
+            result["success"] = True
+            result["details"].append(
+                {
+                    "operation": "move_directory",
+                    "source": str(current_path),
+                    "target": str(target_path),
+                    "success": True,
+                }
+            )
+            verbose_log(f"目录移动完成: {current_path} -> {target_path}", verbose)
+
+        return result
+
+    except Exception as e:
+        result["error"] = f"移动操作失败: {str(e)}"
+        return result
+
+
+def _execute_rename_suggestion(
+    current_path: Path, target_path: Path, file_operator: FileOperator, verbose: bool
+) -> dict:
+    """执行重命名建议"""
+    # 重命名实际上就是移动操作
+    return _execute_move_suggestion(current_path, target_path, file_operator, verbose)
+
+
+def _execute_create_suggestion(
+    target_path: Path, file_operator: FileOperator, verbose: bool
+) -> dict:
+    """执行创建建议"""
+    result = {"success": False, "operation": "create", "details": [], "error": None}
+
+    try:
+        if target_path.suffix == ".md" or "." in target_path.name:
+            # 创建文件
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if not file_operator.dry_run:
+                target_path.touch()
+            result["success"] = True
+            result["details"].append(
+                {"operation": "create_file", "path": str(target_path), "success": True}
+            )
+            verbose_log(f"文件创建完成: {target_path}", verbose)
+        else:
+            # 创建目录
+            create_result = file_operator.create_directory(target_path)
+            result["details"].append(create_result)
+            result["success"] = create_result["success"]
+            if not create_result["success"]:
+                result["error"] = create_result["error"]
+
+        return result
+
+    except Exception as e:
+        result["error"] = f"创建操作失败: {str(e)}"
+        return result
+
+
+def _execute_merge_suggestion(
+    source_path: Path, target_path: Path, file_operator: FileOperator, verbose: bool
+) -> dict:
+    """执行合并建议"""
+    result = {"success": False, "operation": "merge", "details": [], "error": None}
+
+    try:
+        # 合并操作比较复杂，这里实现一个简单版本：移动源目录下的所有内容到目标目录
+        if not source_path.exists() or not source_path.is_dir():
+            result["error"] = f"源目录不存在或不是目录: {source_path}"
+            return result
+
+        # 确保目标目录存在
+        target_path.mkdir(parents=True, exist_ok=True)
+
+        # 移动源目录下的所有内容
+        moved_items = []
+        for item in source_path.iterdir():
+            target_item = target_path / item.name
+            if item.is_file():
+                move_result = file_operator.move_file(item, target_item)
+                moved_items.append(move_result)
+            elif item.is_dir():
+                import shutil
+
+                if not file_operator.dry_run:
+                    shutil.move(str(item), str(target_item))
+                moved_items.append(
+                    {
+                        "operation": "move_directory",
+                        "source": str(item),
+                        "target": str(target_item),
+                        "success": True,
+                    }
+                )
+
+        # 删除空的源目录
+        if not file_operator.dry_run and not any(source_path.iterdir()):
+            source_path.rmdir()
+
+        result["details"] = moved_items
+        result["success"] = all(item.get("success", False) for item in moved_items)
+        verbose_log(f"合并操作完成: {len(moved_items)} 个项目已移动", verbose)
+
+        return result
+
+    except Exception as e:
+        result["error"] = f"合并操作失败: {str(e)}"
+        return result
+
+
+def _display_execution_result(result: dict, suggestion: dict):
+    """显示执行结果"""
+    if result["success"]:
+        console.print(f"[green]✅ {result['operation'].upper()} 操作执行成功！[/green]")
+
+        # 显示操作详情
+        if result["details"]:
+            console.print("\n[bold]操作详情：[/bold]")
+            for i, detail in enumerate(result["details"], 1):
+                status = "✅" if detail.get("success", False) else "❌"
+                op_name = detail.get("operation", "unknown").replace("_", " ").title()
+                console.print(f"  {i}. {status} {op_name}")
+
+                if "source" in detail and "target" in detail:
+                    console.print(f"     {detail['source']} → {detail['target']}")
+                elif "path" in detail:
+                    console.print(f"     {detail['path']}")
+
+                if "error" in detail and detail["error"]:
+                    console.print(f"     [red]错误: {detail['error']}[/red]")
+    else:
+        console.print(f"[red]❌ {result['operation'].upper()} 操作执行失败[/red]")
+        if result["error"]:
+            console.print(f"[red]错误: {result['error']}[/red]")
 
 
 def _interactive_discussion(llm_client: LLMClient, suggestion: dict) -> Optional[dict]:

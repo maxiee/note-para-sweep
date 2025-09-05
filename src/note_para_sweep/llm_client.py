@@ -199,24 +199,33 @@ class LLMClient:
         last_message = messages[-1]["content"] if messages else ""
 
         if "分析以下笔记内容" in last_message:
-            # 笔记分类的mock响应
+            # 笔记分类的mock响应，示例问询情况
             return """
 {
-    "category": "resources",
-    "subcategory": "编程资源",
-    "target_path": "3. Resources/编程资源/收件箱整理笔记.md",
-    "confidence": 0.85,
-    "reasoning": "这是一个包含随机想法和灵感的笔记，适合作为参考资料保存在Resources分类中。内容提到了整理分类的需求，可以归入编程资源子分类。",
-    "action_type": "move",
-    "create_directories": []
+    "category": "projects",
+    "subcategory": "项目管理",
+    "confidence": 0.6,
+    "reasoning": "这个笔记似乎与项目相关，但我不确定具体应该放在哪个项目目录下。",
+    "action_type": "question",
+    "question": "这个笔记是关于哪个具体项目的？现有的项目目录包括'网站重构项目'和'移动应用开发'，还是需要创建新的项目目录？",
+    "question_context": "我需要知道项目的具体名称才能将笔记分类到正确的项目目录中。"
 }
 """
         elif "分析以下PARA知识库结构" in last_message:
-            # 结构优化的mock响应
+            # 结构优化的mock响应，包含一个问询建议
             return """
 {
-    "overall_assessment": "整体结构较为清晰，符合PARA方法论的基本原则。各个分类目录结构合理，但可以进一步优化。",
+    "overall_assessment": "整体结构较为清晰，符合PARA方法论的基本原则。各个分类目录结构合理，但有些地方需要用户确认具体信息。",
     "suggestions": [
+        {
+            "type": "question",
+            "priority": "high",
+            "description": "需要了解Inbox中笔记的具体内容和用户意图",
+            "current_path": "0. Inbox/待分类笔记.md",
+            "reasoning": "Inbox中有未分类的笔记，但我需要了解这个笔记的具体内容和你希望如何处理它。",
+            "question": "Inbox中的'待分类笔记.md'是关于什么内容的？你希望将它分类到哪个PARA分类中？",
+            "question_context": "为了提供准确的分类建议，我需要了解笔记的具体内容和你的分类意图。"
+        },
         {
             "type": "create",
             "priority": "medium",
@@ -224,14 +233,6 @@ class LLMClient:
             "current_path": "",
             "suggested_path": "2. Areas/学习管理",
             "reasoning": "技能学习目录为空，建议创建更具体的学习管理子目录来组织学习相关内容"
-        },
-        {
-            "type": "move",
-            "priority": "low",
-            "description": "考虑将收件箱笔记移动到合适分类",
-            "current_path": "0. Inbox/待分类笔记.md",
-            "suggested_path": "3. Resources/通用资料",
-            "reasoning": "收件箱中的笔记应该及时分类，避免堆积"
         }
     ],
     "structure_score": 0.78,
@@ -271,15 +272,25 @@ PARA 方法说明：
 笔记内容：
 {note_content[:2000]}  
 
+**重要提示**：target_path 必须是具体的文件路径，不能使用描述性文本。例如：
+- 正确：`1. Projects/网站重构项目/新功能开发.md`
+- 错误：`对应的项目目录` 或 `合适的P/A/R子目录`
+
+**不确定时的处理方式**：
+- 如果你不确定笔记应该放在哪个具体的目录或项目中，请设置action_type为"question"
+- 在question字段中向用户提出具体问题，获取更多信息后再给出准确的分类建议
+
 请返回严格的 JSON 格式结果（不要包含任何其他文本）：
 {{
     "category": "projects|areas|resources|archives",
     "subcategory": "具体的子分类名称或路径",
-    "target_path": "建议的完整目标路径（相对于vault根目录）",
+    "target_path": "具体的完整目标文件路径（相对于vault根目录，必须包含文件名和.md扩展名）",
     "confidence": 0.85,
     "reasoning": "详细的分类理由",
-    "action_type": "move|create_and_move",
-    "create_directories": ["需要创建的目录路径1", "需要创建的目录路径2"]
+    "action_type": "move|create_and_move|question",
+    "create_directories": ["需要创建的目录路径1", "需要创建的目录路径2"],
+    "question": "当action_type为question时，向用户提出的具体问题",
+    "question_context": "问题的背景信息，解释为什么需要用户提供更多信息"
 }}
 """
 
@@ -291,6 +302,7 @@ PARA 方法说明：
             {"role": "user", "content": prompt},
         ]
 
+        response = ""
         try:
             response = self.chat_completion(messages, temperature=0.3)
 
@@ -317,6 +329,7 @@ PARA 方法说明：
             return {
                 "success": False,
                 "error": f"LLM API 调用失败: {str(e)}",
+                "raw_response": response,
                 "provider": self.provider,
                 "model": self.model,
             }
@@ -369,22 +382,40 @@ PARA 方法说明：
 笔记概览：
 {notes_overview}
 
+**重要提示**：请确保所有路径都是具体的、可操作的路径，不要使用描述性文本。例如：
+- 正确：`0. Inbox` 或 `1. Projects/网站项目`
+- 错误：`对应的目录` 或 `合适的P/A/R子目录`
+
+**不确定时的处理方式**：
+- 如果你对某个建议的具体路径不确定，请使用 "question" 类型询问用户
+- 比如不知道项目的准确名称、不确定笔记应该归类到哪个具体目录等
+- 这比给出可能错误的路径建议要好得多
+
 请返回严格的JSON格式优化建议（不要包含任何其他文本）：
 {{
     "overall_assessment": "整体评估",
     "suggestions": [
         {{
-            "type": "rename|move|merge|create",
+            "type": "rename|move|merge|create|question",
             "priority": "high|medium|low",
-            "description": "建议描述",
-            "current_path": "当前路径",
-            "suggested_path": "建议路径",
-            "reasoning": "建议理由"
+            "description": "建议描述或问题描述",
+            "current_path": "当前的具体路径（例如：1. Projects/旧项目名）",
+            "suggested_path": "建议的具体目标路径（例如：1. Projects/新项目名）",
+            "reasoning": "建议理由",
+            "question": "当type为question时，向用户提出的具体问题",
+            "question_context": "问题的背景信息，帮助用户理解为什么需要这个信息"
         }}
     ],
     "structure_score": 0.75,
     "main_issues": ["主要问题1", "主要问题2"]
 }}
+
+**路径要求**：
+- current_path 和 suggested_path 必须是具体的文件夹/文件路径
+- 不能使用诸如"对应的P/A/R子目录"、"合适的位置"等描述性文本
+- 路径应该基于当前已存在的PARA结构
+- 如果建议创建新目录，suggested_path应该是完整的新路径
+- 当type为"question"时，可以省略suggested_path字段
 """
 
         messages = [
