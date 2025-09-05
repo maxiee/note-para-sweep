@@ -78,13 +78,58 @@ class LLMClient:
         if self.mock_mode:
             return self._mock_response(messages)
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model, messages=messages, **kwargs
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            raise Exception(f"LLM API 调用失败 ({self.provider}): {str(e)}")
+        # 输入验证
+        if not messages or not isinstance(messages, list):
+            raise ValueError("messages 参数必须是非空列表")
+
+        for msg in messages:
+            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+                raise ValueError("消息格式错误，必须包含 role 和 content 字段")
+
+        # 带重试的API调用
+        max_retries = 3
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model, messages=messages, **kwargs
+                )
+
+                if not response.choices or not response.choices[0].message:
+                    raise Exception("API 返回了空响应")
+
+                content = response.choices[0].message.content
+                if not content:
+                    raise Exception("API 返回了空内容")
+
+                return content
+
+            except openai.RateLimitError as e:
+                last_error = f"请求频率限制: {str(e)}"
+                if attempt < max_retries - 1:
+                    import time
+
+                    time.sleep(2**attempt)  # 指数退避
+                    continue
+            except openai.APIError as e:
+                last_error = f"API 错误: {str(e)}"
+                if attempt < max_retries - 1:
+                    import time
+
+                    time.sleep(1)
+                    continue
+            except Exception as e:
+                last_error = f"未知错误: {str(e)}"
+                if attempt < max_retries - 1:
+                    import time
+
+                    time.sleep(1)
+                    continue
+
+        raise Exception(
+            f"LLM API 调用失败 ({self.provider}) - 已重试 {max_retries} 次: {last_error}"
+        )
 
     def _mock_response(self, messages: list) -> str:
         """模拟AI响应，用于演示"""
@@ -134,7 +179,12 @@ class LLMClient:
         else:
             return "Mock模式：模拟AI响应"
 
-    def classify_note(self, note_content: str, para_structure: str) -> Dict[str, Any]:
+    def classify_note(
+        self,
+        note_content: str,
+        para_structure: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """分类笔记到 PARA 系统
 
         Args:
@@ -307,7 +357,7 @@ PARA 方法说明：
         self,
         original_suggestion: Dict[str, Any],
         user_feedback: str,
-        context: Dict[str, Any] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """交互式完善建议
 
@@ -382,7 +432,7 @@ PARA 方法说明：
             }
 
     def start_suggestion_conversation(
-        self, suggestion: Dict[str, Any], context: Dict[str, Any] = None
+        self, suggestion: Dict[str, Any], context: Optional[Dict[str, Any]] = None
     ):
         """开始建议讨论对话
 
@@ -518,7 +568,7 @@ PARA 方法说明：
 
         return updated_suggestion
 
-    def get_final_suggestion(self) -> Dict[str, Any]:
+    def get_final_suggestion(self) -> Optional[Dict[str, Any]]:
         """获取最终完善后的建议"""
         if not hasattr(self, "current_suggestion"):
             return None

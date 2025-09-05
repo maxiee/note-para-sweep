@@ -1,6 +1,7 @@
 """命令行界面"""
 
 import click
+from typing import Optional
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -45,8 +46,17 @@ def cli(ctx, config, dry_run):
                     "[yellow]⚠️  当前处于试运行模式，不会执行实际的文件操作[/yellow]"
                 )
 
+    except FileNotFoundError as e:
+        console.print(f"[red]配置文件错误: {e}[/red]")
+        console.print("[dim]提示: 请确保配置文件存在且格式正确[/dim]")
+        raise click.Abort()
+    except ValueError as e:
+        console.print(f"[red]配置验证错误: {e}[/red]")
+        console.print("[dim]提示: 请检查配置文件中的参数设置[/dim]")
+        raise click.Abort()
     except Exception as e:
-        console.print(f"[red]配置错误: {e}[/red]")
+        console.print(f"[red]初始化错误: {e}[/red]")
+        console.print("[dim]如果问题持续存在，请检查配置文件或联系支持[/dim]")
         raise click.Abort()
 
 
@@ -261,12 +271,14 @@ def optimize(ctx):
                 continue
 
             # 用户选择
+            console.print(
+                "[dim]选项: y=执行, n=跳过, d=与AI讨论, s=全部跳过, q=退出[/dim]"
+            )
             choice = click.prompt(
                 "选择操作",
                 type=click.Choice(["y", "n", "d", "s", "q"]),
                 default="n",
                 show_choices=True,
-                help="y=执行, n=跳过, d=与AI讨论, s=全部跳过, q=退出",
             )
 
             if choice == "q":
@@ -401,7 +413,7 @@ def _display_optimization_suggestion(suggestion: dict):
     console.print(Panel(reasoning, title="建议理由", expand=False))
 
 
-def _interactive_discussion(llm_client: LLMClient, suggestion: dict) -> dict:
+def _interactive_discussion(llm_client: LLMClient, suggestion: dict) -> Optional[dict]:
     """与AI进行交互式建议讨论
 
     Args:

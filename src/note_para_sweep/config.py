@@ -30,13 +30,29 @@ class Config:
 
     def _validate_config(self):
         """验证配置"""
+        if not isinstance(self.config, dict):
+            raise ValueError("配置文件格式错误，必须是有效的YAML字典")
+
         required_keys = ["llm", "obsidian"]
         for key in required_keys:
             if key not in self.config:
                 raise ValueError(f"配置文件缺少必需的键: {key}")
 
         # 验证 LLM 配置
+        self._validate_llm_config()
+
+        # 验证 Obsidian 配置
+        self._validate_obsidian_config()
+
+        # 验证 PARA 配置
+        self._validate_para_config()
+
+    def _validate_llm_config(self):
+        """验证LLM配置"""
         llm_config = self.config["llm"]
+        if not isinstance(llm_config, dict):
+            raise ValueError("llm 配置必须是字典格式")
+
         provider = llm_config.get("provider", "openai")
 
         if provider not in ["openai", "openrouter"]:
@@ -54,13 +70,40 @@ class Config:
             # 在试运行模式下只发出警告
             print(f"⚠️  警告: 未设置 {provider} API Key，仅可使用试运行模式")
 
+        # 验证模型名称
+        model = provider_config.get("model", "")
+        if not model:
+            raise ValueError(f"请设置 {provider} 的模型名称")
+
+    def _validate_obsidian_config(self):
+        """验证Obsidian配置"""
+        obsidian_config = self.config["obsidian"]
+        if not isinstance(obsidian_config, dict):
+            raise ValueError("obsidian 配置必须是字典格式")
+
         # 验证 Obsidian 库路径
-        vault_path = Path(self.config["obsidian"]["vault_path"])
-        if not vault_path.exists():
-            if vault_path.as_posix() == "/path/to/your/obsidian/vault":
-                print("⚠️  警告: 请在配置文件中设置正确的 Obsidian 库路径")
-            else:
-                raise ValueError(f"Obsidian 库路径不存在: {vault_path}")
+        vault_path_str = obsidian_config.get("vault_path", "")
+        if not vault_path_str:
+            raise ValueError("请设置 Obsidian 库路径")
+
+        vault_path = Path(vault_path_str)
+        if vault_path.as_posix() == "/path/to/your/obsidian/vault":
+            print("⚠️  警告: 请在配置文件中设置正确的 Obsidian 库路径")
+        elif not vault_path.exists():
+            raise ValueError(f"Obsidian 库路径不存在: {vault_path}")
+        elif not vault_path.is_dir():
+            raise ValueError(f"Obsidian 库路径不是目录: {vault_path}")
+
+    def _validate_para_config(self):
+        """验证PARA配置"""
+        if "para" in self.config:
+            para_config = self.config["para"]
+            if not isinstance(para_config, dict):
+                raise ValueError("para 配置必须是字典格式")
+
+            paths = para_config.get("paths", {})
+            if not isinstance(paths, dict):
+                raise ValueError("para.paths 配置必须是字典格式")
 
     @property
     def llm_provider(self) -> str:

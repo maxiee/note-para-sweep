@@ -63,11 +63,48 @@ class FileOperator:
         self.operations_executed = []
         self.suggestion_history = []  # 建议历史记录
 
+    def _is_safe_path(self, path: Path) -> bool:
+        """检查路径安全性，防止路径遍历攻击
+
+        Args:
+            path: 要检查的路径
+
+        Returns:
+            路径是否安全
+        """
+        try:
+            # 解析路径并检查是否包含危险模式
+            resolved_path = path.resolve()
+            path_str = str(resolved_path)
+
+            # 检查危险模式
+            dangerous_patterns = [
+                "../",
+                "..\\",
+                "~",
+                "/etc",
+                "/var",
+                "/usr",
+                "/bin",
+                "/sbin",
+            ]
+            for pattern in dangerous_patterns:
+                if pattern in path_str:
+                    return False
+
+            # 确保路径不为空且是合理的
+            if len(path_str.strip()) == 0 or path_str.strip() in ["/", "\\"]:
+                return False
+
+            return True
+        except Exception:
+            return False
+
     def record_suggestion_history(
         self,
         original_suggestion: Dict[str, Any],
-        final_suggestion: Dict[str, Any] = None,
-        conversation_history: List[Dict[str, Any]] = None,
+        final_suggestion: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
         user_decision: str = "pending",
     ):
         """记录建议的讨论和修改历史
@@ -120,7 +157,7 @@ class FileOperator:
                 )
 
     def move_file(self, source: Path, target: Path) -> Dict[str, Any]:
-        """移动文件到目标位置
+        """移动文件到目标位置（带原子性保障）
 
         Args:
             source: 源文件路径
@@ -139,9 +176,22 @@ class FileOperator:
         }
 
         try:
+            # 输入验证
+            if not isinstance(source, Path):
+                source = Path(source)
+            if not isinstance(target, Path):
+                target = Path(target)
+
+            # 检查路径安全性
+            if not self._is_safe_path(source) or not self._is_safe_path(target):
+                raise ValueError("不安全的文件路径")
+
             # 验证源文件存在
             if not source.exists():
                 raise FileNotFoundError(f"源文件不存在: {source}")
+
+            if not source.is_file():
+                raise ValueError(f"源路径不是文件: {source}")
 
             # 检查目标文件是否已存在
             if target.exists():
@@ -151,10 +201,33 @@ class FileOperator:
             target.parent.mkdir(parents=True, exist_ok=True)
 
             if not self.dry_run:
-                # 执行实际移动操作
-                shutil.move(str(source), str(target))
-                result["success"] = True
-                self.logger.log_operation("MOVE", source, target, success=True)
+                # 原子性操作：先复制，再删除
+                backup_created = False
+                try:
+                    # 复制文件
+                    shutil.copy2(str(source), str(target))
+                    backup_created = True
+
+                    # 验证复制成功
+                    if (
+                        not target.exists()
+                        or target.stat().st_size != source.stat().st_size
+                    ):
+                        raise Exception("文件复制验证失败")
+
+                    # 删除原文件
+                    source.unlink()
+                    result["success"] = True
+                    self.logger.log_operation("MOVE", source, target, success=True)
+
+                except Exception as e:
+                    # 回滚操作
+                    if backup_created and target.exists():
+                        try:
+                            target.unlink()
+                        except:
+                            pass
+                    raise e
             else:
                 # 试运行模式
                 result["success"] = True
