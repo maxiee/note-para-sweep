@@ -217,8 +217,12 @@ def optimize(ctx):
         # 生成笔记概览
         notes_overview = _generate_notes_overview(scan_result)
 
-        # 初始化 LLM 客户端
+        # 初始化 LLM 客户端和文件操作器
         llm_client = LLMClient(config)
+        file_operator = FileOperator(dry_run=dry_run)
+
+        # 加载建议历史
+        file_operator.load_suggestion_history()
 
         console.print("[yellow]正在使用 AI 分析结构优化机会...[/yellow]")
         console.print(
@@ -259,10 +263,10 @@ def optimize(ctx):
             # 用户选择
             choice = click.prompt(
                 "选择操作",
-                type=click.Choice(["y", "n", "s", "q"]),
+                type=click.Choice(["y", "n", "d", "s", "q"]),
                 default="n",
                 show_choices=True,
-                help="y=执行, n=跳过, s=全部跳过, q=退出",
+                help="y=执行, n=跳过, d=与AI讨论, s=全部跳过, q=退出",
             )
 
             if choice == "q":
@@ -271,10 +275,62 @@ def optimize(ctx):
             elif choice == "s":
                 console.print("跳过剩余所有建议")
                 break
+            elif choice == "d":
+                # 进入与AI的交互式讨论
+                final_suggestion = _interactive_discussion(llm_client, suggestion)
+                if final_suggestion:
+                    # 记录建议历史
+                    conversation_history = (
+                        llm_client.conversation_history
+                        if hasattr(llm_client, "conversation_history")
+                        else []
+                    )
+                    file_operator.record_suggestion_history(
+                        original_suggestion=suggestion,
+                        final_suggestion=final_suggestion,
+                        conversation_history=conversation_history,
+                        user_decision="discussed",
+                    )
+
+                    # 显示最终建议
+                    console.print("\n[bold cyan]讨论后的最终建议：[/bold cyan]")
+                    _display_optimization_suggestion(final_suggestion)
+
+                    if Confirm.ask("执行这个最终建议吗？"):
+                        file_operator.record_suggestion_history(
+                            original_suggestion=suggestion,
+                            final_suggestion=final_suggestion,
+                            conversation_history=conversation_history,
+                            user_decision="accepted",
+                        )
+                        console.print("[yellow]优化操作执行功能正在开发中...[/yellow]")
+                    else:
+                        file_operator.record_suggestion_history(
+                            original_suggestion=suggestion,
+                            final_suggestion=final_suggestion,
+                            conversation_history=conversation_history,
+                            user_decision="rejected_after_discussion",
+                        )
+                        console.print("跳过此建议")
+                else:
+                    # 记录取消的讨论
+                    file_operator.record_suggestion_history(
+                        original_suggestion=suggestion,
+                        user_decision="discussion_cancelled",
+                    )
+                    console.print("[yellow]讨论已取消[/yellow]")
             elif choice == "y":
+                # 记录直接接受的建议
+                file_operator.record_suggestion_history(
+                    original_suggestion=suggestion, user_decision="accepted_directly"
+                )
                 # 这里应该执行具体的优化操作
                 console.print("[yellow]优化操作执行功能正在开发中...[/yellow]")
             else:
+                # 记录跳过的建议
+                file_operator.record_suggestion_history(
+                    original_suggestion=suggestion, user_decision="skipped"
+                )
                 console.print("跳过此建议")
 
     except Exception as e:
@@ -343,6 +399,87 @@ def _display_optimization_suggestion(suggestion: dict):
 
     console.print(table)
     console.print(Panel(reasoning, title="建议理由", expand=False))
+
+
+def _interactive_discussion(llm_client: LLMClient, suggestion: dict) -> dict:
+    """与AI进行交互式建议讨论
+
+    Args:
+        llm_client: LLM客户端
+        suggestion: 要讨论的建议
+
+    Returns:
+        最终确定的建议，如果取消则返回None
+    """
+    console.print("\n[bold blue]🤖 进入与AI的交互式讨论模式[/bold blue]")
+    console.print("[dim]你可以告诉AI你的想法、提供准确信息或要求调整建议[/dim]")
+    console.print("[dim]输入 'exit' 或 'quit' 结束讨论[/dim]\n")
+
+    # 开始对话
+    llm_client.start_suggestion_conversation(suggestion)
+
+    # 显示AI的初始建议说明
+    console.print("[bold cyan]🤖 AI：[/bold cyan]")
+    console.print("我刚才给出了这个建议。你觉得怎么样？有什么地方需要调整吗？")
+    console.print("比如，如果我猜测的项目名称或时间不准确，请告诉我正确的信息。\n")
+
+    conversation_count = 0
+    max_conversations = 10  # 限制对话轮数
+
+    while conversation_count < max_conversations:
+        # 获取用户输入
+        user_input = click.prompt(
+            f"[{conversation_count + 1}] 你", default="", show_default=False
+        ).strip()
+
+        if not user_input:
+            continue
+
+        # 检查是否要退出
+        if user_input.lower() in ["exit", "quit", "退出", "结束"]:
+            if Confirm.ask("确定要结束讨论吗？"):
+                console.print("[yellow]讨论已结束[/yellow]")
+                return None
+            else:
+                continue
+
+        # 获取AI回复
+        console.print("[dim]AI正在思考...[/dim]")
+        result = llm_client.continue_suggestion_conversation(user_input)
+
+        if not result["success"]:
+            console.print(f"[red]对话出错: {result['error']}[/red]")
+            continue
+
+        # 显示AI回复
+        console.print(f"\n[bold cyan]🤖 AI：[/bold cyan]")
+        console.print(result["ai_response"])
+
+        # 检查建议是否有更新
+        updated_suggestion = result.get("updated_suggestion")
+        if updated_suggestion != suggestion:
+            console.print("\n[yellow]💡 建议已根据你的反馈进行调整[/yellow]")
+
+        conversation_count += 1
+        console.print()  # 空行分隔
+
+        # 询问是否满意当前建议
+        if conversation_count >= 3:  # 至少讨论3轮后询问
+            if Confirm.ask("你对当前的建议满意吗？"):
+                break
+
+    if conversation_count >= max_conversations:
+        console.print("[yellow]⚠️  已达到最大对话轮数限制[/yellow]")
+
+    # 获取最终建议
+    final_suggestion = llm_client.get_final_suggestion()
+
+    if final_suggestion:
+        console.print("\n[bold green]✅ 讨论完成！[/bold green]")
+        return final_suggestion
+    else:
+        console.print("\n[yellow]讨论已取消[/yellow]")
+        return None
 
 
 def main():

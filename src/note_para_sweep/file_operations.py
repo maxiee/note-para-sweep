@@ -2,6 +2,7 @@
 
 import shutil
 import logging
+import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -60,6 +61,63 @@ class FileOperator:
         self.dry_run = dry_run
         self.logger = FileOperationLogger(log_file)
         self.operations_executed = []
+        self.suggestion_history = []  # 建议历史记录
+
+    def record_suggestion_history(
+        self,
+        original_suggestion: Dict[str, Any],
+        final_suggestion: Dict[str, Any] = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        user_decision: str = "pending",
+    ):
+        """记录建议的讨论和修改历史
+
+        Args:
+            original_suggestion: 原始建议
+            final_suggestion: 最终建议（如果有修改）
+            conversation_history: 对话历史
+            user_decision: 用户决定 (accepted/rejected/pending)
+        """
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "original_suggestion": original_suggestion,
+            "final_suggestion": final_suggestion or original_suggestion,
+            "conversation_history": conversation_history or [],
+            "user_decision": user_decision,
+            "suggestion_id": len(self.suggestion_history) + 1,
+        }
+
+        self.suggestion_history.append(record)
+
+        # 可选：保存到文件
+        self._save_suggestion_history()
+
+    def _save_suggestion_history(self):
+        """保存建议历史到文件"""
+        history_file = Path("suggestion_history.json")
+        try:
+            with open(history_file, "w", encoding="utf-8") as f:
+                json.dump(self.suggestion_history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.log_operation(
+                "SAVE_HISTORY", history_file, success=False, error=str(e)
+            )
+
+    def get_suggestion_history(self) -> List[Dict[str, Any]]:
+        """获取建议历史记录"""
+        return self.suggestion_history.copy()
+
+    def load_suggestion_history(self):
+        """从文件加载建议历史"""
+        history_file = Path("suggestion_history.json")
+        if history_file.exists():
+            try:
+                with open(history_file, "r", encoding="utf-8") as f:
+                    self.suggestion_history = json.load(f)
+            except Exception as e:
+                self.logger.log_operation(
+                    "LOAD_HISTORY", history_file, success=False, error=str(e)
+                )
 
     def move_file(self, source: Path, target: Path) -> Dict[str, Any]:
         """移动文件到目标位置

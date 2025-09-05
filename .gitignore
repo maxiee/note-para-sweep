@@ -1,2 +1,4 @@
 *.pyc
+*.log
 config.yaml
+suggestion_history.json
