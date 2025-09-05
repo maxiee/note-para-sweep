@@ -738,8 +738,11 @@ def _interactive_discussion(llm_client: LLMClient, suggestion: dict) -> Optional
 
         # 检查建议是否有更新
         updated_suggestion = result.get("updated_suggestion")
-        if updated_suggestion != suggestion:
+        if updated_suggestion and updated_suggestion != suggestion:
             console.print("\n[yellow]💡 建议已根据你的反馈进行调整[/yellow]")
+            console.print("[dim]更新后的建议：[/dim]\n")
+            _display_optimization_suggestion(updated_suggestion)
+            suggestion = updated_suggestion  # 更新当前建议
 
         conversation_count += 1
         console.print()  # 空行分隔

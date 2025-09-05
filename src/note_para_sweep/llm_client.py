@@ -541,34 +541,63 @@ PARA 方法说明：
 
         # 构建完整的对话上下文
         conversation_prompt = self._build_conversation_prompt(user_input)
+        response = None  # 初始化response变量
 
         try:
             response = self.chat_completion(
                 [
                     {
                         "role": "system",
-                        "content": "你是PARA方法专家，正在与用户讨论结构优化建议。请友好地回应用户，并根据反馈调整建议。",
+                        "content": "你是PARA方法专家，正在与用户讨论结构优化建议。你必须始终返回严格的JSON格式，包含adjusted_suggestion字段和ai_message字段。不要使用自然语言回复。",
                     },
                     {"role": "user", "content": conversation_prompt},
                 ],
                 temperature=0.3,
             )
 
-            # 添加AI回复到对话历史
-            self.conversation_history.append({"role": "assistant", "content": response})
+            # 解析JSON响应
+            parsed_response = self._parse_json_response(response)
 
-            # 尝试更新建议（如果用户提供了具体信息）
-            updated_suggestion = self._extract_updated_suggestion(response, user_input)
+            # 提取AI消息和更新的建议
+            ai_message = parsed_response.get(
+                "ai_message", response
+            )  # 如果没有ai_message字段，使用原始响应
+            adjusted_suggestion = parsed_response.get(
+                "adjusted_suggestion", self.current_suggestion
+            )
+
+            # 更新当前建议
+            if adjusted_suggestion != self.current_suggestion:
+                self.current_suggestion = adjusted_suggestion
+
+            # 添加AI回复到对话历史（使用ai_message部分）
+            self.conversation_history.append(
+                {"role": "assistant", "content": ai_message}
+            )
 
             return {
                 "success": True,
-                "ai_response": response,
-                "updated_suggestion": updated_suggestion,
+                "ai_response": ai_message,
+                "updated_suggestion": adjusted_suggestion,
                 "conversation_history": self.conversation_history.copy(),
+                "raw_response": response,
                 "provider": self.provider,
                 "model": self.model,
             }
 
+        except json.JSONDecodeError as e:
+            # 如果JSON解析失败，返回错误但保持对话继续
+            self._log_verbose(f"JSON解析失败: {str(e)}", "warning")
+            return {
+                "success": False,
+                "error": f"AI回复格式错误 (JSON解析失败): {str(e)}",
+                "ai_response": response or "无响应",
+                "updated_suggestion": self.current_suggestion,
+                "conversation_history": self.conversation_history.copy(),
+                "raw_response": response or "无响应",
+                "provider": self.provider,
+                "model": self.model,
+            }
         except Exception as e:
             return {
                 "success": False,
@@ -595,8 +624,21 @@ PARA 方法说明：
                 "",
                 f"用户最新输入: {user_input}",
                 "",
-                "请回应用户的反馈，如果用户提供了具体信息（如准确的项目名称、时间等），"
-                "请相应调整建议。保持友好的对话语调。",
+                "请根据用户反馈调整建议，并返回严格的JSON格式：",
+                "{",
+                '  "ai_message": "友好的回应消息，说明你的理解和调整",',
+                '  "adjusted_suggestion": {',
+                '    "type": "rename|move|merge|create",',
+                '    "priority": "high|medium|low",',
+                '    "description": "调整后的建议描述",',
+                '    "current_path": "当前路径",',
+                '    "suggested_path": "调整后的建议路径",',
+                '    "reasoning": "调整理由",',
+                '    "changes_made": "相比原建议的具体改动说明"',
+                "  }",
+                "}",
+                "",
+                "不要包含任何其他文本，只返回有效的JSON。",
             ]
         )
 
