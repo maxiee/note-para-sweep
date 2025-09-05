@@ -1,19 +1,31 @@
 # Note PARA Sweep 配置文件
 # 复制此文件为 config.yaml 并填入你的配置
 
-# OpenAI API 配置
-openai:
-  api_key: "your-openai-api-key-here"
-  model: "gpt-4"  # 或者 "gpt-3.5-turbo"
+# LLM 提供商配置
+llm:
+  # 默认提供商: "openai" 或 "openrouters"
+  provider: "openai"
+
+  # OpenAI 配置
+  openai:
+    api_key: "your-openai-api-key-here"
+    model: "gpt-4"  # 或者 "gpt-3.5-turbo"
+    base_url: "https://api.openai.com/v1"  # 可选，自定义API端点
+
+  # OpenRouter 配置
+  openrouter:
+    api_key: "your-openrouter-api-key-here"
+    model: "openai/gpt-4o"  # OpenRouter模型名称，如 "anthropic/claude-3-haiku"
+    base_url: "https://openrouter.ai/api/v1"
 
 # Obsidian 库配置
 obsidian:
   vault_path: "/path/to/your/obsidian/vault"
-  
+
   # PARA 目录配置
   para:
     projects: "1. Projects"
-    areas: "2. Areas"  
+    areas: "2. Areas"
     resources: "3. Resources"
     archives: "4. Archives"
     inbox: "0. Inbox"  # 可选：收件箱目录

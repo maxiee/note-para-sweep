@@ -8,6 +8,7 @@ from rich.prompt import Confirm
 
 from .config import Config
 from .scanner import DirectoryScanner
+from .llm_client import LLMClient
 
 
 console = Console()
@@ -78,10 +79,45 @@ def classify(ctx, note_path):
 
     console.print(f"[blue]正在分析笔记: {note_path}[/blue]")
 
-    if dry_run:
-        console.print("[yellow]试运行模式：这里将展示 AI 分析结果和建议操作[/yellow]")
-    else:
-        console.print("[red]此功能还在开发中...[/red]")
+    try:
+        # 读取笔记内容
+        with open(note_path, "r", encoding="utf-8") as f:
+            note_content = f.read()
+
+        # 获取 PARA 结构
+        scanner = DirectoryScanner(config.vault_path, config.para_paths)
+        scan_result = scanner.scan()
+        para_structure = scanner.generate_structure_summary(scan_result)
+
+        # 初始化 LLM 客户端
+        llm_client = LLMClient(config)
+
+        if dry_run:
+            console.print("[yellow]试运行模式：将使用 AI 分析笔记[/yellow]")
+            console.print(f"[dim]使用提供商: {config.llm_provider}[/dim]")
+            console.print(f"[dim]使用模型: {config.llm_model}[/dim]")
+
+        # 调用 AI 分类
+        result = llm_client.classify_note(note_content, para_structure)
+
+        # 显示结果
+        console.print(
+            Panel(
+                f"AI 分析结果:\n{result['response']}\n\n[dim]提供商: {result['provider']} | 模型: {result['model']}[/dim]",
+                title="笔记分类结果",
+                expand=True,
+            )
+        )
+
+        if dry_run:
+            console.print("[yellow]试运行模式：未执行实际操作[/yellow]")
+        else:
+            console.print("[green]分类完成！[/green]")
+
+    except Exception as e:
+        console.print(f"[red]分类失败: {e}[/red]")
+        if dry_run:
+            console.print("[yellow]这可能是因为 API Key 未配置导致的[/yellow]")
 
 
 @cli.command()
