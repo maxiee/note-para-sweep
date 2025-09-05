@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "note-para-sweep"
+version = "0.1.0"
+description = "AI Agent for organizing Obsidian notes using PARA method"
+authors = ["Maxiee <maxieewong@gmail.com>"]
+readme = "README.md"
+packages = [{include = "note_para_sweep", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.8.1"
+openai = "^1.0.0"
+PyYAML = "^6.0"
+click = "^8.0.0"
+colorama = "^0.4.6"
+rich = "^13.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+black = "^23.0.0"
+flake8 = "^6.0.0"
+
+[tool.poetry.scripts]
+note-para-sweep = "note_para_sweep.cli:main"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

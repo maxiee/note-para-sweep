@@ -1,0 +1,30 @@
+# Note PARA Sweep 配置文件
+# 复制此文件为 config.yaml 并填入你的配置
+
+# OpenAI API 配置
+openai:
+  api_key: "your-openai-api-key-here"
+  model: "gpt-4"  # 或者 "gpt-3.5-turbo"
+
+# Obsidian 库配置
+obsidian:
+  vault_path: "/path/to/your/obsidian/vault"
+  
+  # PARA 目录配置
+  para:
+    projects: "1. Projects"
+    areas: "2. Areas"  
+    resources: "3. Resources"
+    archives: "4. Archives"
+    inbox: "0. Inbox"  # 可选：收件箱目录
+
+# 日志配置
+logging:
+  log_file: "para_sweep.log"
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+
+# 安全设置
+safety:
+  dry_run_by_default: true  # 默认启用试运行模式
+  require_confirmation: true  # 需要用户确认
+  backup_before_move: false  # 移动前是否备份
